@@ -12,6 +12,6 @@ spec:
         pathType: Prefix
         backend:
           service:
-            name: devops-demo-service
+            name: devops-service
             port:
               number: 80

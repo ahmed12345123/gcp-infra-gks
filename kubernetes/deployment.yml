@@ -1,19 +1,30 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: devops-demo
+  name: devops-app
 spec:
   replicas: 2
   selector:
     matchLabels:
-      app: devops-demo
+      app: devops-app
   template:
     metadata:
       labels:
-        app: devops-demo
+        app: devops-app
     spec:
       containers:
-      - name: devops-demo
-        image: gcr.io/elated-bus-460108-d0/nginx-custom-ak
+      - name: devops-app
+        image: us-west1-docker.pkg.dev/elated-bus-460108-d0/devops-repo-akw/devops-app:v1
         ports:
-        - containerPort: 3000
+        - containerPort: 8080
+        env:
+        - name: ENVIRONMENT
+          value: "PROD"
+        - name: HOST
+          value: "0.0.0.0"
+        - name: PORT
+          value: "8080"
+        - name: REDIS_HOST
+          value: "redis"
+        - name: REDIS_PORT
+          value: "6379"

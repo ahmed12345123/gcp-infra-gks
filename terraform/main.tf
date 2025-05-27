@@ -1,3 +1,5 @@
+
+
 terraform {
   required_version = ">= 1.3.0"
   required_providers {
@@ -8,25 +10,24 @@ terraform {
   }
 }
 
-
-
 provider "google" {
   project = var.project_id
   region  = var.region
+  zone    = "${var.region}-a"
 }
 
-# Use existing VPC named "lab2-vpc"
+# Use existing VPC
 data "google_compute_network" "lab2_vpc" {
-  name = "lab2-vpc"
+  name = "mostafa-custom-vpc"
 }
-  
+
+# Subnets
 resource "google_compute_subnetwork" "management" {
   name          = "management-subnet-ak"
-  ip_cidr_range = "10.55.1.0/24"  # your management subnet CIDR
+  ip_cidr_range = "10.55.1.0/24"
   region        = var.region
   network       = data.google_compute_network.lab2_vpc.id
 }
-
 
 resource "google_compute_subnetwork" "restricted" {
   name          = "restricted-subnet-ak"
@@ -39,17 +40,16 @@ resource "google_compute_subnetwork" "restricted" {
 
   secondary_ip_range {
     range_name    = "pods"
-    ip_cidr_range = "10.67.0.0/16"    # non-overlapping, in 10.66.x.x range
+    ip_cidr_range = "10.67.0.0/16"
   }
 
   secondary_ip_range {
     range_name    = "services"
-    ip_cidr_range = "10.68.0.0/20"  # non-overlapping
+    ip_cidr_range = "10.68.0.0/20"
   }
 }
 
-
-# Enable required APIs
+# Enable APIs
 resource "google_project_service" "services" {
   for_each = toset([
     "compute.googleapis.com",
@@ -61,7 +61,7 @@ resource "google_project_service" "services" {
   service = each.key
 }
 
-# NAT Router for management subnet
+# NAT Gateway
 resource "google_compute_router" "nat_router" {
   name    = "nat-router-un"
   network = data.google_compute_network.lab2_vpc.id
@@ -89,30 +89,46 @@ resource "google_artifact_registry_repository" "repo" {
   format        = "DOCKER"
 }
 
-# GKE Node Service Account
-resource "google_service_account" "gke_nodes" {
-  account_id   = "gke-nodes-sa"
-  display_name = "GKE Nodes Service Account"
+# Service Account
+
+resource "google_service_account" "gke_node_sa" {
+  account_id   = "gke-node-sa"
+  display_name = "Custom GKE Node Service Account"
 }
 
-resource "google_project_iam_member" "artifact_registry_reader" {
+resource "google_project_iam_member" "gke_node_container_role" {
+  project = var.project_id
+  role    = "roles/container.nodeServiceAccount"
+  member  = "serviceAccount:${google_service_account.gke_node_sa.email}"
+}
+
+resource "google_project_iam_member" "gke_node_logging" {
+  project = var.project_id
+  role    = "roles/logging.logWriter"
+  member  = "serviceAccount:${google_service_account.gke_node_sa.email}"
+}
+
+resource "google_project_iam_member" "gke_node_monitoring" {
+  project = var.project_id
+  role    = "roles/monitoring.metricWriter"
+  member  = "serviceAccount:${google_service_account.gke_node_sa.email}"
+}
+
+resource "google_project_iam_member" "gke_node_artifact" {
   project = var.project_id
   role    = "roles/artifactregistry.reader"
-  member  = "serviceAccount:${google_service_account.gke_nodes.email}"
+  member  = "serviceAccount:${google_service_account.gke_node_sa.email}"
 }
 
-# GKE Cluster
+# GKE Cluster definition 
 resource "google_container_cluster" "primary" {
-  name       = "private-gke-cluster-ak"
-  #location   = var.region
-  location       = "${var.region}-a"
-  network    = data.google_compute_network.lab2_vpc.name
+  name     = "private-gke-cluster-akw"
+  location = "${var.region}-a"
+  network  = data.google_compute_network.lab2_vpc.name
   subnetwork = google_compute_subnetwork.restricted.name
 
   remove_default_node_pool = true
   initial_node_count       = 1
-
-  deletion_protection = false
 
   private_cluster_config {
     enable_private_nodes    = true
@@ -136,32 +152,38 @@ resource "google_container_cluster" "primary" {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
 
-  depends_on = [google_project_service.services]
+  timeouts {
+    create = "45m"
+    update = "45m"
+    delete = "30m"
+  }
+
+  depends_on = [
+    google_project_service.services["container.googleapis.com"],
+    google_project_service.services["compute.googleapis.com"],
+    google_compute_subnetwork.restricted
+  ]
 }
 
-# GKE Node Pool
+
 resource "google_container_node_pool" "primary_nodes" {
-  name       = "primary-node-pool-ak"
-  location   = var.region
+  name       = "primary-node-pool"
   cluster    = google_container_cluster.primary.name
-  node_count = 1
+  location   = google_container_cluster.primary.location
 
   node_config {
-    machine_type    = "e2-medium"
-    disk_size_gb    = 10
-    disk_type       = "pd-standard"
-    service_account = google_service_account.gke_nodes.email
+    service_account = google_service_account.gke_node_sa.email
     oauth_scopes = [
       "https://www.googleapis.com/auth/cloud-platform"
     ]
+    
   }
-  
- 
 
-  depends_on = [google_service_account.gke_nodes]
+  initial_node_count = 1
 }
 
-# Private VM (management VM, no public IP)
+
+# Management VM
 resource "google_compute_instance" "management_vm" {
   name         = "management-vm-ak"
   machine_type = "e2-medium"
@@ -175,7 +197,6 @@ resource "google_compute_instance" "management_vm" {
 
   network_interface {
     subnetwork = google_compute_subnetwork.management.name
-    # No access_config block means no public IP
   }
 
   metadata_startup_script = <<-EOT
@@ -187,6 +208,8 @@ resource "google_compute_instance" "management_vm" {
     apt-get update
     apt-get install -y kubectl
   EOT
+
+  depends_on = [
+    google_compute_router_nat.nat_gateway
+  ]
 }
-
-

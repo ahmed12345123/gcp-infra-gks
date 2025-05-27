@@ -1,12 +1,12 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: devops-demo-service
+  name: devops-service
 spec:
-  type: NodePort
+  type: NodePort  
   selector:
-    app: devops-demo
+    app: devops-app
   ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 3000
+    - port: 80        
+      targetPort: 8080  
+
